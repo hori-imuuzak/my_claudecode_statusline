@@ -1,58 +1,60 @@
 #!/bin/sh
 input=$(cat)
 
-# --- Model ---
-model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
+# --- Colors (basic ANSI only) ---
+# Use printf to generate actual ESC sequences, not literal \033
+RST=$(printf '\033[0m')
+DIM=$(printf '\033[2m')
+GREEN=$(printf '\033[32m')
+YELLOW=$(printf '\033[33m')
+RED=$(printf '\033[31m')
 
-# --- Gradient progress bar helper ---
-# Usage: build_gradient_bar <percentage_int>
-# Outputs: gradient bar string (15 chars wide) with ANSI truecolor
-# Colors: green(0%) → yellow(50%) → red(100%)
-RST="\033[0m"
-DIM="\033[38;2;60;60;60m"
-build_gradient_bar() {
+# --- Simple progress bar (basic 3-color) ---
+# Usage: build_bar <percentage_int>
+build_bar() {
   _pct=$1
-  _width=15
-  _filled=$(echo "$_pct" | awk -v w="$_width" '{f=int($1/100*w+0.5); if(f>w)f=w; if(f<0)f=0; print f}')
-  _empty=$((_width - _filled))
-  _bar=""
+  _width=10
+  _filled=$(( _pct * _width / 100 ))
+  [ "$_filled" -gt "$_width" ] && _filled=$_width
+  [ "$_filled" -lt 0 ] && _filled=0
+  _empty=$(( _width - _filled ))
+
+  # Pick color by threshold
+  if [ "$_pct" -lt 50 ]; then
+    _color="$GREEN"
+  elif [ "$_pct" -lt 80 ]; then
+    _color="$YELLOW"
+  else
+    _color="$RED"
+  fi
+
+  _bar="${_color}"
   _i=0
   while [ $_i -lt $_filled ]; do
-    # Position ratio (0.0 to 1.0) based on absolute position in full bar
-    _rgb=$(echo "$_i $_width" | awk '{
-      ratio = ($1 / ($2 - 1 > 0 ? $2 - 1 : 1))
-      if (ratio <= 0.5) {
-        r = int(46 + (255 - 46) * ratio * 2)
-        g = int(204 + (220 - 204) * ratio * 2)
-        b = int(113 + (50 - 113) * ratio * 2)
-      } else {
-        r = int(255 + (239 - 255) * (ratio - 0.5) * 2)
-        g = int(220 + (68 - 220) * (ratio - 0.5) * 2)
-        b = int(50 + (68 - 50) * (ratio - 0.5) * 2)
-      }
-      printf "%d;%d;%d", r, g, b
-    }')
-    _bar="${_bar}\033[38;2;${_rgb}m█"
+    _bar="${_bar}█"
     _i=$((_i + 1))
   done
+  _bar="${_bar}${DIM}"
   _i=0
   while [ $_i -lt $_empty ]; do
-    _bar="${_bar}${DIM}░"
+    _bar="${_bar}░"
     _i=$((_i + 1))
   done
   _bar="${_bar}${RST}"
-  echo "$_bar"
+  printf '%s' "$_bar"
 }
+
+# --- Model ---
+model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
 
 # --- Context window ---
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-
 if [ -n "$used_pct" ]; then
   pct_int=$(echo "$used_pct" | awk '{printf "%d", $1}')
-  ctx_bar=$(build_gradient_bar "$pct_int")
+  ctx_bar=$(build_bar "$pct_int")
   ctx_display="${ctx_bar} ${used_pct}%"
 else
-  ctx_display="${DIM}░░░░░░░░░░░░░░░${RST} --"
+  ctx_display="${DIM}░░░░░░░░░░${RST} --"
 fi
 
 # --- Current working directory (abbreviated) ---
@@ -75,6 +77,7 @@ fi
 
 # --- Git repo name + branch ---
 git_info=""
+repo_root=""
 if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
   repo_root=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   repo_name=$(basename "$repo_root" 2>/dev/null)
@@ -83,33 +86,27 @@ if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
     git_branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
     git_branch="(${git_branch})"
   fi
-  git_info="${repo_name} 🌿 ${git_branch}"
+  git_info="${repo_name}:${git_branch}"
 fi
 
 # --- OSC 8 link helper ---
-# Usage: osc_link <file_path> <display_text>
 osc_link() {
   printf '\033]8;;file://%s\033\\%s\033]8;;\033\\' "$1" "$2"
 }
 
 # --- Reference files (OSC 8 clickable links) ---
 ref_links=""
-
-# Memory.md
 memory_dir="$HOME/.claude/projects"
 if [ -n "$cwd" ]; then
-  # Derive project memory path from cwd
-  project_key=$(echo "$cwd" | sed 's|/|-|g')
+  project_key=$(echo "$cwd" | sed 's|[/_]|-|g')
   memory_file="${memory_dir}/${project_key}/memory/MEMORY.md"
   if [ -f "$memory_file" ]; then
     ref_links="$(osc_link "$memory_file" "MEMORY.md")"
   fi
 fi
 
-# Plan files: search for .md files in .claude/plans/ or project memory
 plan_links=""
 if [ -n "$cwd" ]; then
-  # Check project memory directory for plan files
   project_memory_dir="${memory_dir}/${project_key}/memory"
   if [ -d "$project_memory_dir" ]; then
     for f in "$project_memory_dir"/*.md; do
@@ -123,7 +120,6 @@ if [ -n "$cwd" ]; then
       fi
     done
   fi
-  # Check .claude/plans/ in the repo root for plan files
   if [ -n "$repo_root" ] && [ -d "${repo_root}/.claude/plans" ]; then
     for f in "${repo_root}/.claude/plans"/*.md; do
       [ -f "$f" ] || continue
@@ -145,12 +141,30 @@ if [ -n "$plan_links" ]; then
   fi
 fi
 
-# --- ccusage block info ---
-# Session block cost limit (USD) - adjust if plan changes
-BLOCK_COST_LIMIT=10.0 # 契約プランに応じて調整
+# --- ccusage block info (cached for 10 seconds) ---
+BLOCK_COST_LIMIT=100
+CACHE_FILE="/tmp/claude-statusline-ccusage.cache"
+CACHE_TTL=10
 
 block_display=""
-ccusage_block=$(bun x ccusage blocks --active --json 2>/dev/null || true)
+# Check cache freshness
+use_cache=false
+if [ -f "$CACHE_FILE" ]; then
+  cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0) ))
+  if [ "$cache_age" -lt "$CACHE_TTL" ]; then
+    use_cache=true
+  fi
+fi
+
+if [ "$use_cache" = true ]; then
+  ccusage_block=$(cat "$CACHE_FILE")
+else
+  ccusage_block=$(bun x ccusage blocks --active --json 2>/dev/null || true)
+  if [ -n "$ccusage_block" ]; then
+    echo "$ccusage_block" > "$CACHE_FILE"
+  fi
+fi
+
 if [ -n "$ccusage_block" ]; then
   is_active=$(echo "$ccusage_block" | jq -r '.blocks[0].isActive // empty')
   if [ "$is_active" = "true" ]; then
@@ -158,60 +172,42 @@ if [ -n "$ccusage_block" ]; then
     remaining=$(echo "$ccusage_block" | jq -r '.blocks[0].projection.remainingMinutes // empty')
     if [ -n "$cost" ]; then
       pct_int=$(echo "$cost" | awk -v limit="$BLOCK_COST_LIMIT" '{printf "%d", ($1 / limit * 100)}')
-      limit_bar=$(build_gradient_bar "$pct_int")
-      limit_display="${limit_bar} ${pct_int}%"
-      # Time remaining
+      limit_bar=$(build_bar "$pct_int")
       time_display=""
       if [ -n "$remaining" ] && [ "$remaining" != "null" ]; then
         hours=$((remaining / 60))
         mins=$((remaining % 60))
         if [ "$hours" -gt 0 ]; then
-          time_display="🕐 ${hours}h ${mins}m left"
+          time_display="${hours}h${mins}m"
         else
-          time_display="🕐 ${mins}m left"
+          time_display="${mins}m"
         fi
       fi
-      block_display="${limit_display}"
+      block_display="${limit_bar} ${pct_int}%"
       if [ -n "$time_display" ]; then
-        block_display="${block_display} | ${time_display}"
+        block_display="${block_display}(${time_display})"
       fi
     fi
-  else
-    block_display="░░░░░░░░░░░░░░░ --"
   fi
 fi
 
-# --- Assemble output ---
-# Line 1: 📁 directory
-# Line 2: 🔀 repo/branch
-# Line 3: 🧠 context | 💪 model
-# Line 4: 📊 limit | 🕐 time left
-# Line 5: 📎 reference file links (if any)
+# --- Assemble output (3 lines) ---
+# Line 1: dir | repo:branch
+# Line 2: ctx bar | model | cost bar
+# Line 3: reference links (if any)
 
 line1="📁 ${cwd_short}"
-line2=""
 if [ -n "$git_info" ]; then
-  line2="🔀 ${git_info}"
-fi
-line3="🧠 ${ctx_display} | 💪 ${model}"
-line4=""
-if [ -n "$block_display" ]; then
-  line4="📊 ${block_display}"
-fi
-line5=""
-if [ -n "$ref_links" ]; then
-  line5="📎 ${ref_links}"
+  line1="${line1} | 🔀 ${git_info}"
 fi
 
-output="$line1"
-if [ -n "$line2" ]; then
-  output="${output}\n${line2}"
+line2="🧠 ${ctx_display} | 💪 ${model}"
+if [ -n "$block_display" ]; then
+  line2="${line2} | 📊 ${block_display}"
 fi
-output="${output}\n${line3}"
-if [ -n "$line4" ]; then
-  output="${output}\n${line4}"
+
+if [ -n "$ref_links" ]; then
+  printf '%s\n%s\n📎 %s' "$line1" "$line2" "$ref_links"
+else
+  printf '%s\n%s' "$line1" "$line2"
 fi
-if [ -n "$line5" ]; then
-  output="${output}\n${line5}"
-fi
-printf "%b" "$output"
