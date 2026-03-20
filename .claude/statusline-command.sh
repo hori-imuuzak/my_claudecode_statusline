@@ -63,17 +63,7 @@ if [ -z "$cwd" ]; then
   cwd=$(pwd)
 fi
 home_dir="$HOME"
-cwd_short="${cwd#$home_dir}"
-if [ "$cwd_short" != "$cwd" ]; then
-  cwd_short="~$cwd_short"
-fi
-if [ ${#cwd_short} -gt 40 ]; then
-  cwd_short=$(echo "$cwd_short" | awk -F/ '{
-    n = NF;
-    if (n >= 2) printf ".../%s/%s", $(n-1), $n;
-    else print $0
-  }')
-fi
+cwd_short=$(basename "$cwd")
 
 # --- Git repo name + branch ---
 git_info=""
@@ -86,7 +76,7 @@ if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
     git_branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
     git_branch="(${git_branch})"
   fi
-  git_info="${repo_name}:${git_branch}"
+  git_info="${git_branch}"
 fi
 
 # --- OSC 8 link helper ---
