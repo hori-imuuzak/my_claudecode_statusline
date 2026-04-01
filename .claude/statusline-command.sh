@@ -131,53 +131,53 @@ if [ -n "$plan_links" ]; then
   fi
 fi
 
-# --- ccusage block info (cached for 10 seconds) ---
-BLOCK_COST_LIMIT=100
-CACHE_FILE="/tmp/claude-statusline-ccusage.cache"
-CACHE_TTL=10
+# --- Rate limits (official: five_hour / seven_day) ---
+format_remaining() {
+  _reset_at=$1
+  _now=$(date +%s)
+  _diff=$(( _reset_at - _now ))
+  if [ "$_diff" -le 0 ]; then
+    printf '%s' "now"
+    return
+  fi
+  _hours=$(( _diff / 3600 ))
+  _mins=$(( (_diff % 3600) / 60 ))
+  if [ "$_hours" -gt 0 ]; then
+    printf '%s' "${_hours}h${_mins}m"
+  else
+    printf '%s' "${_mins}m"
+  fi
+}
 
-block_display=""
-# Check cache freshness
-use_cache=false
-if [ -f "$CACHE_FILE" ]; then
-  cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0) ))
-  if [ "$cache_age" -lt "$CACHE_TTL" ]; then
-    use_cache=true
+five_hour_display=""
+five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+if [ -n "$five_hour_pct" ]; then
+  five_pct_int=$(echo "$five_hour_pct" | awk '{printf "%d", $1}')
+  five_bar=$(build_bar "$five_pct_int")
+  five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
+  five_time=""
+  if [ -n "$five_reset" ]; then
+    five_time="$(format_remaining "$five_reset")"
+  fi
+  five_hour_display="${five_bar} ${five_pct_int}%"
+  if [ -n "$five_time" ]; then
+    five_hour_display="${five_hour_display}(${five_time})"
   fi
 fi
 
-if [ "$use_cache" = true ]; then
-  ccusage_block=$(cat "$CACHE_FILE")
-else
-  ccusage_block=$(bun x ccusage blocks --active --json 2>/dev/null || true)
-  if [ -n "$ccusage_block" ]; then
-    echo "$ccusage_block" > "$CACHE_FILE"
+seven_day_display=""
+seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+if [ -n "$seven_day_pct" ]; then
+  seven_pct_int=$(echo "$seven_day_pct" | awk '{printf "%d", $1}')
+  seven_bar=$(build_bar "$seven_pct_int")
+  seven_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+  seven_time=""
+  if [ -n "$seven_reset" ]; then
+    seven_time="$(format_remaining "$seven_reset")"
   fi
-fi
-
-if [ -n "$ccusage_block" ]; then
-  is_active=$(echo "$ccusage_block" | jq -r '.blocks[0].isActive // empty')
-  if [ "$is_active" = "true" ]; then
-    cost=$(echo "$ccusage_block" | jq -r '.blocks[0].costUSD // empty')
-    remaining=$(echo "$ccusage_block" | jq -r '.blocks[0].projection.remainingMinutes // empty')
-    if [ -n "$cost" ]; then
-      pct_int=$(echo "$cost" | awk -v limit="$BLOCK_COST_LIMIT" '{printf "%d", ($1 / limit * 100)}')
-      limit_bar=$(build_bar "$pct_int")
-      time_display=""
-      if [ -n "$remaining" ] && [ "$remaining" != "null" ]; then
-        hours=$((remaining / 60))
-        mins=$((remaining % 60))
-        if [ "$hours" -gt 0 ]; then
-          time_display="${hours}h${mins}m"
-        else
-          time_display="${mins}m"
-        fi
-      fi
-      block_display="${limit_bar} ${pct_int}%"
-      if [ -n "$time_display" ]; then
-        block_display="${block_display}(${time_display})"
-      fi
-    fi
+  seven_day_display="${seven_bar} ${seven_pct_int}%"
+  if [ -n "$seven_time" ]; then
+    seven_day_display="${seven_day_display}(${seven_time})"
   fi
 fi
 
@@ -192,8 +192,11 @@ if [ -n "$git_info" ]; then
 fi
 
 line2="🧠 ${ctx_display} | 💪 ${model}"
-if [ -n "$block_display" ]; then
-  line2="${line2} | 📊 ${block_display}"
+if [ -n "$five_hour_display" ]; then
+  line2="${line2} | ⏱ ${five_hour_display}"
+fi
+if [ -n "$seven_day_display" ]; then
+  line2="${line2} | 📅 ${seven_day_display}"
 fi
 
 if [ -n "$ref_links" ]; then
